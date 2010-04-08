@@ -1,0 +1,53 @@
+This package includes:
+
+* FTIIC010 I2C bus driver
+
+Usage:
+
+* put the following code in your platform-dpendent initialization sequence.
+------------------------>8-------------------------->8------------------------
+static struct resource ftiic010_0_resources[] = {
+	{
+		.start  = IIC_FTIIC010_0_PA_BASE,
+		.end    = IIC_FTIIC010_0_PA_LIMIT,
+		.flags  = IORESOURCE_MEM,
+	}, {
+		.start	= IIC_FTIIC010_0_IRQ,
+		.end	= IIC_FTIIC010_0_IRQ,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device ftiic010_0_device = {
+	.name		= "ftiic010",
+	.id		= 0,
+	.num_resources	= ARRAY_SIZE(ftiic010_0_resources),
+	.resource	= ftiic010_0_resources,
+};
+
+static struct resource ftiic010_1_resources[] = {
+	{
+		.start  = IIC_FTIIC010_1_PA_BASE,
+		.end    = IIC_FTIIC010_1_PA_LIMIT,
+		.flags  = IORESOURCE_MEM,
+	}, {
+		.start	= IIC_FTIIC010_1_IRQ,
+		.end	= IIC_FTIIC010_1_IRQ,
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device ftiic010_1_device = {
+	.name		= "ftiic010",
+	.id		= 1,
+	.num_resources	= ARRAY_SIZE(ftiic010_1_resources),
+	.resource	= ftiic010_1_resources,
+};
+
+platform_device_register(&ftiic010_0_device);
+platform_device_register(&ftiic010_1_device);
+------------------------>8-------------------------->8------------------------
+
+* make sure the following config options are set
+
+CONFIG_I2C=y
