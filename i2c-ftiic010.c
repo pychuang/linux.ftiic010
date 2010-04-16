@@ -33,7 +33,8 @@
 
 #include "ftiic010.h"
 
-#define SCL_SPEED	(100 * 1024)
+#define SCL_SPEED	(100 * 1000)
+#define MAX_RETRY	1000
 
 #define PCLK	APB_CLK_IN
 #define GSR	5
@@ -44,13 +45,21 @@ struct ftiic010 {
 	void __iomem *base;
 	int irq;
 	struct i2c_adapter adapter;
-	int ack;
-	wait_queue_head_t waitq;
 };
 
 /******************************************************************************
  * internal functions
  *****************************************************************************/
+static void ftiic010_reset(struct ftiic010 *ftiic010)
+{
+	int cr = FTIIC010_CR_I2C_RST;
+
+	iowrite32(cr, ftiic010->base + FTIIC010_OFFSET_CR);
+
+	/* wait until reset bit cleared by hw */
+	while (ioread32(ftiic010->base + FTIIC010_OFFSET_CR) & FTIIC010_CR_I2C_RST);
+}
+
 static void ftiic010_set_clock_speed(struct ftiic010 *ftiic010, int hz)
 {
 	int cdr;
@@ -75,6 +84,7 @@ static void ftiic010_set_tgsr(struct ftiic010 *ftiic010, int tsr, int gsr)
 
 static void ftiic010_hw_init(struct ftiic010 *ftiic010)
 {
+	ftiic010_reset(ftiic010);
 	ftiic010_set_tgsr(ftiic010, TSR, GSR);
 	ftiic010_set_clock_speed(ftiic010, SCL_SPEED);
 }
@@ -87,8 +97,6 @@ static inline void ftiic010_set_cr(struct ftiic010 *ftiic010, int start,
 	cr = FTIIC010_CR_I2C_EN
 	   | FTIIC010_CR_SCL_EN
 	   | FTIIC010_CR_TB_EN
-	   | FTIIC010_CR_DTI_EN
-	   | FTIIC010_CR_DRI_EN
 	   | FTIIC010_CR_BERRI_EN
 	   | FTIIC010_CR_ALI_EN;
 
@@ -104,33 +112,66 @@ static inline void ftiic010_set_cr(struct ftiic010 *ftiic010, int start,
 	iowrite32(cr, ftiic010->base + FTIIC010_OFFSET_CR);
 }
 
-static void ftiic010_tx_byte(struct ftiic010 *ftiic010, __u8 data, int start,
+static int ftiic010_tx_byte(struct ftiic010 *ftiic010, __u8 data, int start,
 		int stop)
 {
+	struct i2c_adapter *adapter = &ftiic010->adapter;
+	int i;
+
 	iowrite32(data, ftiic010->base + FTIIC010_OFFSET_DR);
-
-	ftiic010->ack = 0;
 	ftiic010_set_cr(ftiic010, start, stop, 0);
-	wait_event(ftiic010->waitq, ftiic010->ack);
+
+	for (i = 0; i < MAX_RETRY; i++) {
+		unsigned int status;
+
+		status = ioread32(ftiic010->base + FTIIC010_OFFSET_SR);
+		if (status & FTIIC010_SR_DT) {
+			return 0;
+		}
+
+		udelay(1);
+	}
+
+	dev_err(&adapter->dev, "Failed to transmit\n");
+	ftiic010_reset(ftiic010);
+	return -EIO;
 }
 
-static __u8 ftiic010_rx_byte(struct ftiic010 *ftiic010, int stop, int nak)
+static int ftiic010_rx_byte(struct ftiic010 *ftiic010, int stop, int nak)
 {
-	ftiic010->ack = 0;
-	ftiic010_set_cr(ftiic010, 0, stop, nak);
-	wait_event(ftiic010->waitq, ftiic010->ack);
+	struct i2c_adapter *adapter = &ftiic010->adapter;
+	int i;
 
-	return ioread32(ftiic010->base + FTIIC010_OFFSET_DR) & FTIIC010_DR_MASK;
+	ftiic010_set_cr(ftiic010, 0, stop, nak);
+
+	for (i = 0; i < MAX_RETRY; i++) {
+		unsigned int status;
+
+		status = ioread32(ftiic010->base + FTIIC010_OFFSET_SR);
+		if (status & FTIIC010_SR_DR) {
+			return ioread32(ftiic010->base + FTIIC010_OFFSET_DR)
+				& FTIIC010_DR_MASK;
+		}
+
+		udelay(1);
+	}
+
+	dev_err(&adapter->dev, "Failed to receive\n");
+	ftiic010_reset(ftiic010);
+	return -EIO;
 }
 
-static void ftiic010_tx_msg(struct ftiic010 *ftiic010,
+static int ftiic010_tx_msg(struct ftiic010 *ftiic010,
 		struct i2c_msg *msg, int last)
 {
 	__u8 data;
+	int ret;
 	int i;
 
 	data = (msg->addr & 0x7f) << 1;
-	ftiic010_tx_byte(ftiic010, data, 1, 0);
+	ret = ftiic010_tx_byte(ftiic010, data, 1, 0);
+	if (ret < 0)
+		return ret;
 
 	for (i = 0; i < msg->len; i++) {
 		int stop = 0;
@@ -138,18 +179,25 @@ static void ftiic010_tx_msg(struct ftiic010 *ftiic010,
 		if (last && i + 1 == msg->len)
 			stop = 1;
 
-		ftiic010_tx_byte(ftiic010, msg->buf[i], 0, stop);
+		ret = ftiic010_tx_byte(ftiic010, msg->buf[i], 0, stop);
+		if (ret < 0)
+			return ret;
 	}
+
+	return 0;
 }
 
-static void ftiic010_rx_msg(struct ftiic010 *ftiic010,
+static int ftiic010_rx_msg(struct ftiic010 *ftiic010,
 		struct i2c_msg *msg, int last)
 {
 	__u8 data;
+	int ret;
 	int i;
 
 	data = (msg->addr & 0x7f) << 1 | 1;
-	ftiic010_tx_byte(ftiic010, data, 1, 0);
+	ret = ftiic010_tx_byte(ftiic010, data, 1, 0);
+	if (ret < 0)
+		return ret;
 
 	for (i = 0; i < msg->len; i++) {
 		int nak = 0;
@@ -157,17 +205,23 @@ static void ftiic010_rx_msg(struct ftiic010 *ftiic010,
 		if (i + 1 == msg->len)
 			nak = 1;
 
-		msg->buf[i] = ftiic010_rx_byte(ftiic010, last, nak);
+		ret = ftiic010_rx_byte(ftiic010, last, nak);
+		if (ret < 0)
+			return ret;
+
+		msg->buf[i] = ret;
 	}
+
+	return 0;
 }
 
-static void ftiic010_do_msg(struct ftiic010 *ftiic010,
+static int ftiic010_do_msg(struct ftiic010 *ftiic010,
 		struct i2c_msg *msg, int last)
 {
 	if (msg->flags & I2C_M_RD)
-		ftiic010_rx_msg(ftiic010, msg, last);
+		return ftiic010_rx_msg(ftiic010, msg, last);
 	else
-		ftiic010_tx_msg(ftiic010, msg, last);
+		return ftiic010_tx_msg(ftiic010, msg, last);
 }
 
 /******************************************************************************
@@ -181,24 +235,14 @@ static irqreturn_t ftiic010_interrupt(int irq, void *dev_id)
 
 	sr = ioread32(ftiic010->base + FTIIC010_OFFSET_SR);
 
-	if (sr & FTIIC010_SR_DT) {
-		dev_dbg(&adapter->dev, "data transmitted\n");
-		ftiic010->ack = 1;
-		wake_up(&ftiic010->waitq);
-	}
-
-	if (sr & FTIIC010_SR_DR) {
-		dev_dbg(&adapter->dev, "data received\n");
-		ftiic010->ack = 1;
-		wake_up(&ftiic010->waitq);
-	}
-
 	if (sr & FTIIC010_SR_BERR) {
 		dev_err(&adapter->dev, "NAK!\n");
+		ftiic010_reset(ftiic010);
 	}
 
 	if (sr & FTIIC010_SR_AL) {
 		dev_err(&adapter->dev, "arbitration lost!\n");
+		ftiic010_reset(ftiic010);
 	}
 
 	return IRQ_HANDLED;
@@ -215,11 +259,14 @@ static int ftiic010_master_xfer(struct i2c_adapter *adapter,
 
 	for (i = 0; i < num; i++) {
 		int last = 0;
+		int ret;
 
 		if (i == num - 1)
 			last = 1;
 
-		ftiic010_do_msg(ftiic010, &msgs[i], last);
+		ret = ftiic010_do_msg(ftiic010, &msgs[i], last);
+		if (ret)
+			return ret;
 	}
 
 	return num;
@@ -258,8 +305,6 @@ static int ftiic010_probe(struct platform_device *pdev)
 		ret = -ENOMEM;
 		goto err_alloc;
 	}
-
-	init_waitqueue_head(&ftiic010->waitq);
 
 	ftiic010->res = request_mem_region(res->start,
 			res->end - res->start, dev_name(&pdev->dev));
