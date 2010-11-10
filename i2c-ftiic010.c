@@ -19,9 +19,11 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#include <linux/clk.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/sched.h>
+#include <linux/slab.h>
 #include <linux/init.h>
 
 #include <linux/platform_device.h>
@@ -36,7 +38,6 @@
 #define SCL_SPEED	(100 * 1000)
 #define MAX_RETRY	1000
 
-#define PCLK	APB_CLK_IN
 #define GSR	5
 #define TSR	5
 
@@ -44,6 +45,7 @@ struct ftiic010 {
 	struct resource *res;
 	void __iomem *base;
 	int irq;
+	struct clk *clk;
 	struct i2c_adapter adapter;
 };
 
@@ -62,9 +64,12 @@ static void ftiic010_reset(struct ftiic010 *ftiic010)
 
 static void ftiic010_set_clock_speed(struct ftiic010 *ftiic010, int hz)
 {
+	unsigned long pclk;
 	int cdr;
 
-	cdr = (PCLK / hz - GSR) / 2 - 2;
+	pclk = clk_get_rate(ftiic010->clk);
+
+	cdr = (pclk/ hz - GSR) / 2 - 2;
 	cdr &= FTIIC010_CDR_MASK;
 
 	dev_dbg(&ftiic010->adapter.dev, "  [CDR] = %08x\n", cdr);
@@ -289,6 +294,7 @@ static int ftiic010_probe(struct platform_device *pdev)
 {
 	struct ftiic010 *ftiic010;
 	struct resource *res;
+	struct clk *clk;
 	int irq;
 	int ret;
 
@@ -329,6 +335,15 @@ static int ftiic010_probe(struct platform_device *pdev)
 
 	ftiic010->irq = irq;
 
+	clk = clk_get(NULL, "pclk");
+	if (!clk) {
+		dev_err(&pdev->dev, "Failed to get pclk\n");
+		goto err_clk;
+	}
+
+	clk_enable(clk);
+	ftiic010->clk = clk;
+
 	/*
 	 * initialize i2c adapter
 	 */
@@ -355,6 +370,9 @@ static int ftiic010_probe(struct platform_device *pdev)
 	return 0;
 
 err_add_adapter:
+	clk_disable(clk);
+	clk_put(clk);
+err_clk:
 	free_irq(ftiic010->irq, ftiic010);
 err_req_irq:
 	iounmap(ftiic010->base);
@@ -372,6 +390,8 @@ static int __devexit ftiic010_remove(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, NULL);
 	i2c_del_adapter(&ftiic010->adapter);
+	clk_disable(ftiic010->clk);
+	clk_put(ftiic010->clk);
 	free_irq(ftiic010->irq, ftiic010);
 	iounmap(ftiic010->base);
 	release_resource(ftiic010->res);
