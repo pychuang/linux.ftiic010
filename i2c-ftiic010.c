@@ -351,11 +351,20 @@ static int ftiic010_probe(struct platform_device *pdev)
 	ftiic010->adapter.algo		= &ftiic010_algorithm;
 	ftiic010->adapter.timeout	= 1;
 	ftiic010->adapter.dev.parent	= &pdev->dev;
+
+	/*
+	 * If "dev->id" is negative we consider it as zero.
+	 * The reason to do so is to avoid sysfs names that only make
+	 * sense when there are multiple adapters.
+	 */
+	ftiic010->adapter.nr		= pdev->id != -1 ? pdev->id : 0;
 	strcpy(ftiic010->adapter.name, "ftiic010 adapter");
 
 	i2c_set_adapdata(&ftiic010->adapter, ftiic010);
 
-	ret = i2c_add_adapter(&ftiic010->adapter);
+	ftiic010_hw_init(ftiic010);
+
+	ret = i2c_add_numbered_adapter(&ftiic010->adapter);
 	if (ret) {
 		dev_err(&pdev->dev, "Failed to add i2c adapter\n");
 		goto err_add_adapter;
@@ -364,8 +373,6 @@ static int ftiic010_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, ftiic010);
 
 	dev_info(&pdev->dev, "irq %d, mapped at %p\n", irq, ftiic010->base);
-
-	ftiic010_hw_init(ftiic010);
 
 	return 0;
 
