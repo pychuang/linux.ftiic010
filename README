@@ -8,12 +8,11 @@ Usage:
 ------------------------>8-------------------------->8------------------------
 static struct resource ftiic010_0_resources[] = {
 	{
-		.start  = IIC_FTIIC010_0_PA_BASE,
-		.end    = IIC_FTIIC010_0_PA_LIMIT,
-		.flags  = IORESOURCE_MEM,
+		.start	= A369_FTIIC010_0_PA_BASE,
+		.end	= A369_FTIIC010_0_PA_BASE + SZ_4K - 1,
+		.flags	= IORESOURCE_MEM,
 	}, {
-		.start	= IIC_FTIIC010_0_IRQ,
-		.end	= IIC_FTIIC010_0_IRQ,
+		.start	= IRQ_A369_FTIIC010_0,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
@@ -27,12 +26,11 @@ static struct platform_device ftiic010_0_device = {
 
 static struct resource ftiic010_1_resources[] = {
 	{
-		.start  = IIC_FTIIC010_1_PA_BASE,
-		.end    = IIC_FTIIC010_1_PA_LIMIT,
-		.flags  = IORESOURCE_MEM,
+		.start	= A369_FTIIC010_1_PA_BASE,
+		.end	= A369_FTIIC010_1_PA_BASE + SZ_4K - 1,
+		.flags	= IORESOURCE_MEM,
 	}, {
-		.start	= IIC_FTIIC010_1_IRQ,
-		.end	= IIC_FTIIC010_1_IRQ,
+		.start	= IRQ_A369_FTIIC010_1,
 		.flags	= IORESOURCE_IRQ,
 	},
 };
